@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <div class="item-header">
+        <h2>Notifications</h2>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back to Dashboard</a>
+    </div>
+    
+    {% if notifications %}
+        {% for notification in notifications %}
+        <div class="card {% if not notification.read_status %}invitation-card{% endif %}">
+            <div class="item-header">
+                <div>
+                    <h4>{{ notification.title }}</h4>
+                    <p style="color: #666; margin: 0.5rem 0;">{{ notification.message }}</p>
+                    <div class="file-info">
+                        {{ notification.created_at[:16] }}
+                        {% if not notification.read_status %}
+                            <span style="color: #667eea; font-weight: bold;">• New</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="item-actions">
+                    {% if notification.type == 'invitation' and notification.related_id %}
+                        <a href="{{ url_for('group_detail', group_id=notification.related_id) }}" class="btn btn-small">View Group</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div style="text-align: center; padding: 3rem; color: #666;">
+            <div style="font-size: 4rem; margin-bottom: 1rem;">🔔</div>
+            <h3>No Notifications</h3>
+            <p>You're all caught up!</p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

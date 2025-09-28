@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1>Welcome to Bug Tracker</h1>
+    <p>A collaborative platform for tracking bugs and managing development teams.</p>
+    <br>
+    <div class="grid grid-2">
+        <div>
+            <h3>🚀 Features</h3>
+            <ul>
+                <li>Create and manage development groups</li>
+                <li>Report bugs with file attachments</li>
+                <li>Track bug approval status</li>
+                <li>Submit and review suggestions</li>
+                <li>Team collaboration tools</li>
+            </ul>
+        </div>
+        <div>
+            <h3>🎯 Get Started</h3>
+            <p>Join the platform to start collaborating with your team!</p>
+            <br>
+            <a href="{{ url_for('signup') }}" class="btn">Sign Up Now</a>
+            <a href="{{ url_for('login') }}" class="btn btn-secondary">Login</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
