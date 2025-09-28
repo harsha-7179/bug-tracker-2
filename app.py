@@ -273,16 +273,16 @@ def is_group_leader(user_id, group_id):
     conn.close()
     return leader is not None
 
-def create_notification(user_id, title, message, notification_type, related_id=None):
-    """Create a notification for a user"""
+# --- CHANGE 1: MODIFIED create_notification ---
+# Now accepts a 'conn' object to prevent database locks.
+def create_notification(conn, user_id, title, message, notification_type, related_id=None):
+    """Create a notification for a user using an existing connection"""
     try:
-        conn = get_db_connection()
         conn.execute(
             'INSERT INTO notifications (user_id, title, message, type, related_id) VALUES (?, ?, ?, ?, ?)',
             (user_id, title, message, notification_type, related_id)
         )
-        conn.commit()
-        conn.close()
+        # The calling function will now handle commit() and close()
         return True
     except Exception as e:
         print(f"Error creating notification: {e}")
@@ -567,15 +567,16 @@ def group_detail(group_id):
         (group_id,)
     ).fetchone()
     
-    # Get group members with leader status
+    # --- CHANGE 2: FIXED SQL QUERY ---
+    # Replaced 'NULLS LAST' with a compatible sorting method for SQLite.
     members = conn.execute('''
-        SELECT u.id as user_id, u.username, m.joined_at, 
-               CASE WHEN gl.user_id IS NOT NULL THEN gl.user_id ELSE NULL END as is_leader
+        SELECT u.id as user_id, u.username, m.joined_at,
+               CASE WHEN gl.user_id IS NOT NULL THEN 1 ELSE 0 END as is_leader
         FROM memberships m
         JOIN users u ON m.user_id = u.id
         LEFT JOIN group_leaders gl ON m.user_id = gl.user_id AND m.group_id = gl.group_id
         WHERE m.group_id = ?
-        ORDER BY gl.user_id DESC NULLS LAST, u.username
+        ORDER BY is_leader DESC, u.username
     ''', (group_id,)).fetchall()
     
     # Get bugs
@@ -602,8 +603,8 @@ def group_detail(group_id):
     
     conn.close()
     return render_template('group_detail.html', 
-                         group=group, members=members, bugs=bugs, 
-                         suggestions=suggestions, is_leader=is_leader)
+                           group=group, members=members, bugs=bugs, 
+                           suggestions=suggestions, is_leader=is_leader)
 
 @app.route('/invite_user/<int:group_id>', methods=['POST'])
 def invite_user(group_id):
@@ -611,6 +612,7 @@ def invite_user(group_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
     
+    conn = get_db_connection()
     try:
         username = request.form['username'].strip()
         message = request.form.get('message', '').strip()
@@ -619,25 +621,20 @@ def invite_user(group_id):
             flash('Username is required!', 'error')
             return redirect(url_for('group_detail', group_id=group_id))
         
-        conn = get_db_connection()
-        
         # Check if current user is group leader
         if not is_group_leader(session['user_id'], group_id):
             flash('Only group leaders can invite users!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Find user to invite
         user_to_invite = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
         if not user_to_invite:
             flash('User not found!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Check if trying to invite themselves
         if user_to_invite['id'] == session['user_id']:
             flash('You cannot invite yourself!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Check if user is already a member
@@ -648,7 +645,6 @@ def invite_user(group_id):
         
         if existing_membership:
             flash('User is already a member of this group!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Check for existing invitation
@@ -659,14 +655,12 @@ def invite_user(group_id):
         
         if existing_invitation:
             flash('User already has a pending invitation!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Get group name
         group = conn.execute('SELECT name FROM groups WHERE id = ?', (group_id,)).fetchone()
         if not group:
             flash('Group not found!', 'error')
-            conn.close()
             return redirect(url_for('dashboard'))
         
         # Create invitation
@@ -675,28 +669,28 @@ def invite_user(group_id):
             (session['user_id'], user_to_invite['id'], group_id, message)
         )
         
-        # Create notification - use a simpler approach to avoid potential issues
-        try:
-            conn.execute(
-                'INSERT INTO notifications (user_id, title, message, type, related_id) VALUES (?, ?, ?, ?, ?)',
-                (user_to_invite['id'], 'Group Invitation', 
-                 f'{session["username"]} invited you to join "{group["name"]}"', 
-                 'invitation', group_id)
-            )
-        except Exception as notification_error:
-            print(f"Notification creation failed: {notification_error}")
-            # Continue even if notification fails
-        
+        # --- CHANGE 3: UPDATED CALL to create_notification ---
+        # Passing the 'conn' object to use the existing database connection.
+        create_notification(
+            conn,
+            user_to_invite['id'], 
+            'Group Invitation', 
+            f'{session["username"]} invited you to join "{group["name"]}"',
+            'invitation', 
+            group_id
+        )
+
         conn.commit()
-        conn.close()
-        
         flash(f'Invitation sent to {username}!', 'success')
-        return redirect(url_for('group_detail', group_id=group_id))
         
     except Exception as e:
         print(f"Error in invite_user: {e}")
         flash('An error occurred while sending the invitation. Please try again.', 'error')
-        return redirect(url_for('group_detail', group_id=group_id))
+    finally:
+        if conn:
+            conn.close()
+            
+    return redirect(url_for('group_detail', group_id=group_id))
 
 @app.route('/respond_invitation/<int:invitation_id>/<response>')
 def respond_invitation(invitation_id, response):
@@ -724,7 +718,7 @@ def respond_invitation(invitation_id, response):
     # Update invitation status
     conn.execute(
         'UPDATE group_invitations SET status = ?, responded_at = CURRENT_TIMESTAMP WHERE id = ?',
-        (response + 'd', invitation_id)
+        (response + 'ed', invitation_id)
     )
     
     if response == 'accept':
@@ -748,13 +742,11 @@ def make_leader(group_id, user_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
     
+    conn = get_db_connection()
     try:
-        conn = get_db_connection()
-        
         # Check if current user is group leader
         if not is_group_leader(session['user_id'], group_id):
             flash('Only group leaders can assign new leaders!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Check if target user is a member
@@ -765,7 +757,6 @@ def make_leader(group_id, user_id):
         
         if not membership:
             flash('User is not a member of this group!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Check if already a leader
@@ -776,7 +767,6 @@ def make_leader(group_id, user_id):
         
         if existing_leader:
             flash('User is already a leader!', 'error')
-            conn.close()
             return redirect(url_for('group_detail', group_id=group_id))
         
         # Add as leader
@@ -790,32 +780,29 @@ def make_leader(group_id, user_id):
         group = conn.execute('SELECT name FROM groups WHERE id = ?', (group_id,)).fetchone()
         
         if user and group:
-            # Create notification with error handling
-            try:
-                conn.execute(
-                    'INSERT INTO notifications (user_id, title, message, type, related_id) VALUES (?, ?, ?, ?, ?)',
-                    (user_id, 'Leadership Assignment', 
-                     f'You have been made a leader of "{group["name"]}"', 
-                     'leadership', group_id)
-                )
-            except Exception as notification_error:
-                print(f"Notification creation failed: {notification_error}")
-                # Continue even if notification fails
-            
+            # --- CHANGE 4: UPDATED CALL to create_notification ---
+            # Passing the 'conn' object here as well.
+            create_notification(
+                conn,
+                user_id, 
+                'Leadership Assignment', 
+                f'You have been made a leader of "{group["name"]}"',
+                'leadership', 
+                group_id
+            )
             conn.commit()
-            conn.close()
-            
             flash(f'{user["username"]} has been made a leader!', 'success')
         else:
-            conn.close()
             flash('Error occurred while assigning leadership!', 'error')
-        
-        return redirect(url_for('group_detail', group_id=group_id))
-        
+            
     except Exception as e:
         print(f"Error in make_leader: {e}")
         flash('An error occurred while assigning leadership. Please try again.', 'error')
-        return redirect(url_for('group_detail', group_id=group_id))
+    finally:
+        if conn:
+            conn.close()
+
+    return redirect(url_for('group_detail', group_id=group_id))
 
 @app.route('/upload_bug/<int:group_id>', methods=['POST'])
 def upload_bug(group_id):
